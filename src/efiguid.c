@@ -32,6 +32,7 @@
 #include "efi/Protocol/LoadedImage.h"
 #include "efi/Protocol/SimpleFileSystem.h"
 #include "efi/Guid/GlobalVariable.h"
+#include "efi/Protocol/LoadFile2.h"
 
 /** Block I/O protocol GUID */
 EFI_GUID efi_block_io_protocol_guid
@@ -56,3 +57,7 @@ EFI_GUID efi_simple_file_system_protocol_guid
 /** Global variable GUID */
 EFI_GUID efi_global_variable_guid
 	= EFI_GLOBAL_VARIABLE;
+
+/** Load File 2 protocol GUID */
+EFI_GUID efi_load_file2_protocol_guid
+	= EFI_LOAD_FILE2_PROTOCOL_GUID;
