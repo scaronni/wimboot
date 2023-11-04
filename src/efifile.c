@@ -31,6 +31,7 @@
 #include "wimboot.h"
 #include "vdisk.h"
 #include "cmdline.h"
+#include "cpio.h"
 #include "wimpatch.h"
 #include "wimfile.h"
 #include "efi.h"
@@ -59,11 +60,35 @@ static const wchar_t *efi_wim_paths[] = {
 	NULL
 };
 
+/** Linux initrd media device path */
+static struct {
+	VENDOR_DEVICE_PATH vendor;
+	EFI_DEVICE_PATH_PROTOCOL end;
+} __attribute__ ((packed)) efi_initrd_path = {
+	.vendor = {
+		.Header = EFI_DEVPATH_INIT (efi_initrd_path.vendor,
+									MEDIA_DEVICE_PATH, MEDIA_VENDOR_DP),
+		.Guid = LINUX_EFI_INITRD_MEDIA_GUID,
+	},
+	.end = EFI_DEVPATH_END_INIT (efi_initrd_path.end),
+};
+
+/** bootarch file */
+struct vdisk_file *bootarch;
+
 /** bootmgfw.efi file */
 struct vdisk_file *bootmgfw;
 
 /** bootmgfw_EX.efi file */
 struct vdisk_file *bootmgfw_ex;
+
+/** WIM image file */
+static struct vdisk_file *bootwim;
+
+
+
+static void ( * efi_read_func ) ( struct vdisk_file *file, void *data,
+								  size_t offset, size_t len );
 
 /**
  * Read from EFI file
@@ -124,6 +149,99 @@ static void efi_patch_bcd ( struct vdisk_file *vfile __unused, void *data,
 }
 
 /**
+ * File handler
+ *
+ * @v name		File name
+ * @v data		File data
+ * @v len		Length
+ * @ret rc		Return status code
+ */
+static int efi_add_file ( const char *name, void *data, size_t len) {
+	struct vdisk_file *vfile;
+
+	vfile = vdisk_add_file ( name, data, len, efi_read_func );
+
+	/* Check for special-case files */
+	if ( strcasecmp ( name, efi_bootarch_name() ) == 0 ) {
+		DBG ( "...found bootloader file %s\n", name );
+		bootarch = vfile;
+	} else if ( strcasecmp ( name, "bootmgfw.efi" ) == 0 ) {
+		DBG ( "...found bootmgfw.efi file %s\n", name );
+		bootmgfw = vfile;
+	} else if ( strcasecmp ( name, "bootmgfw_EX.efi" ) == 0 ) {
+		DBG ( "...found bootloader file %s\n", name );
+		bootmgfw_ex = vfile;
+	} else if ( strcasecmp ( name, "BCD" ) == 0 ) {
+		DBG ( "...found BCD\n" );
+		vdisk_patch_file ( vfile, efi_patch_bcd );
+	} else if ( strcasecmp ( ( name + ( strlen ( name ) - 4 ) ),
+				".wim" ) == 0 ) {
+		DBG ( "...found WIM file %s\n", name );
+		bootwim = vfile;
+	}
+
+	return 0;
+}
+
+/**
+ * Extract files from Linux initrd media
+ *
+ * @ret rc		Return status code
+ */
+static int
+efi_extract_initrd (void)
+{
+	EFI_BOOT_SERVICES *bs = efi_systab->BootServices;
+	EFI_HANDLE lf2_handle;
+	EFI_LOAD_FILE2_PROTOCOL *lf2;
+	EFI_DEVICE_PATH_PROTOCOL *dp = ( EFI_DEVICE_PATH_PROTOCOL * ) &efi_initrd_path;
+	UINTN initrd_len = 0;
+	UINTN pages;
+	void *initrd;
+	EFI_PHYSICAL_ADDRESS phys;
+	EFI_STATUS efirc;
+
+	/* Locate initrd media device */
+	efirc = bs->LocateDevicePath ( &efi_load_file2_protocol_guid,
+								   &dp, &lf2_handle );
+	if ( efirc != EFI_SUCCESS )
+		return -1;
+	DBG ( "...found initrd media device\n" );
+
+	/* Get LoadFile2 protocol */
+	efirc = bs->HandleProtocol ( lf2_handle, &efi_load_file2_protocol_guid,
+								 ( void ** ) &lf2 );
+	if ( efirc != EFI_SUCCESS )
+		die ( "Could not get LoadFile2 protocol.\n" );
+
+	/* Get initrd size */
+	efirc = lf2->LoadFile ( lf2, dp, FALSE, &initrd_len, NULL );
+	if ( initrd_len == 0 )
+		die ( "Could not get initrd size\n" );
+
+	/* Allocate memory */
+	pages = ( ( initrd_len + PAGE_SIZE - 1 ) / PAGE_SIZE );
+	if ( ( efirc = bs->AllocatePages ( AllocateAnyPages,
+					   EfiLoaderData, pages,
+					   &phys ) ) != 0 ) {
+		die ( "Could not allocate %ld pages: %#lx\n",
+		      ( ( unsigned long ) pages ), ( ( unsigned long ) efirc ) );
+	}
+	initrd = ( ( void * ) ( intptr_t ) phys );
+
+	/* Read initrd */
+	efirc = lf2->LoadFile ( lf2, dp, FALSE, &initrd_len, initrd );
+	if (efirc != EFI_SUCCESS)
+		die ("Could not read initrd.\n");
+
+	efi_read_func = vdisk_read_mem_file;
+	if ( cpio_extract ( initrd, initrd_len, efi_add_file ) != 0 )
+		die ( "FATAL: could not extract initrd files\n" );
+
+	return 0;
+}
+
+/**
  * Extract files from EFI file system
  *
  * @v handle		Device handle
@@ -139,14 +257,15 @@ void efi_extract ( EFI_HANDLE handle ) {
 		CHAR16 name[ VDISK_NAME_LEN + 1 /* WNUL */ ];
 	} __attribute__ (( packed )) info;
 	char name[ VDISK_NAME_LEN + 1 /* NUL */ ];
-	struct vdisk_file *wim = NULL;
-	struct vdisk_file *bootarch = NULL;
-	struct vdisk_file *vfile;
 	EFI_FILE_PROTOCOL *root;
 	EFI_FILE_PROTOCOL *file;
 	UINTN size;
 	CHAR16 *wname;
 	EFI_STATUS efirc;
+
+	/* Extract files from initrd media */
+	if ( efi_extract_initrd () == 0 )
+	  goto skip_to_process;
 
 	/* Open file system */
 	if ( ( efirc = bs->OpenProtocol ( handle,
@@ -193,29 +312,12 @@ void efi_extract ( EFI_HANDLE handle ) {
 
 		/* Add file */
 		snprintf ( name, sizeof ( name ), "%ls", wname );
-		vfile = vdisk_add_file ( name, file, info.file.FileSize,
-					 efi_read_file );
 
-		/* Check for special-case files */
-		if ( wcscasecmp ( wname, efi_bootarch_wname() ) == 0 ) {
-			DBG ( "...found bootloader file %ls\n", wname );
-			bootarch = vfile;
-		} else if ( wcscasecmp ( wname, L"bootmgfw.efi" ) == 0 ) {
-			DBG ( "...found bootloader file %ls\n", wname );
-			bootmgfw = vfile;
-		} else if ( wcscasecmp ( wname, L"bootmgfw_EX.efi" ) == 0 ) {
-			DBG ( "...found bootloader file %ls\n", wname );
-			bootmgfw_ex = vfile;
-		} else if ( wcscasecmp ( wname, L"BCD" ) == 0 ) {
-			DBG ( "...found BCD\n" );
-			vdisk_patch_file ( vfile, efi_patch_bcd );
-		} else if ( wcscasecmp ( ( wname + ( wcslen ( wname ) - 4 ) ),
-					 L".wim" ) == 0 ) {
-			DBG ( "...found WIM file %ls\n", wname );
-			wim = vfile;
-		}
+		efi_read_func = efi_read_file;
+		efi_add_file ( name, file, info.file.FileSize );
 	}
 
+skip_to_process:
 	/* Use only boot<arch>.efi if provided */
 	if ( bootarch ) {
 		if ( bootmgfw )
@@ -227,21 +329,21 @@ void efi_extract ( EFI_HANDLE handle ) {
 	}
 
 	/* Extract bootloader(s) from WIM if none are explicitly provided */
-	if ( wim && ( ! bootmgfw ) && ( ! bootmgfw_ex ) ) {
-		if ( ( bootmgfw = wim_add_file ( wim, cmdline_index,
+	if ( bootwim && ( ! bootmgfw ) && ( ! bootmgfw_ex ) ) {
+		if ( ( bootmgfw = wim_add_file ( bootwim, cmdline_index,
 						 bootmgfw_path ) ) ) {
 			DBG ( "...extracted %ls\n", bootmgfw_path );
 		}
-		if ( ( bootmgfw_ex = wim_add_file ( wim, cmdline_index,
+		if ( ( bootmgfw_ex = wim_add_file ( bootwim, cmdline_index,
 						    bootmgfw_ex_path ) ) ) {
 			DBG ( "...extracted %ls\n", bootmgfw_ex_path );
 		}
 	}
 
 	/* Process WIM image */
-	if ( wim ) {
-		vdisk_patch_file ( wim, patch_wim );
-		wim_add_files ( wim, cmdline_index, efi_wim_paths );
+	if ( bootwim ) {
+		vdisk_patch_file ( bootwim, patch_wim );
+		wim_add_files ( bootwim, cmdline_index, efi_wim_paths );
 	}
 
 	/* Check that we have a boot file */
