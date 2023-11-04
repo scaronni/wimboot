@@ -292,6 +292,7 @@ static struct pe_header efi_pe_header = {
 			.Magic = EFI_IMAGE_NT_OPTIONAL_HDR_MAGIC,
 			.MajorLinkerVersion = 42,
 			.MinorLinkerVersion = 42,
+			.MajorImageVersion = 1,
 			.SectionAlignment = EFI_IMAGE_ALIGN,
 			.FileAlignment = EFI_FILE_ALIGN,
 			.SizeOfImage = EFI_IMAGE_ALIGN,
