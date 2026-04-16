@@ -112,6 +112,14 @@ SECTIONS {
 	__i386__start = _start;
 	__i386__end = _end;
 
+	/* Offset of efi_handover within the payload (for prefix.S).
+	 * PROVIDE supplies a default for architectures (i386, arm64)
+	 * where efi_handover.S does not define the symbol.
+	 */
+	PROVIDE ( efi_handover = _payload );
+	_efi_handover_raw_offset = ABSOLUTE ( efi_handover ) -
+				   ABSOLUTE ( _payload );
+
 	/DISCARD/ : {
 		*(.comment)
 		*(.comment.*)

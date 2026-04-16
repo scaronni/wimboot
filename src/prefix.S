@@ -48,6 +48,12 @@
 /** Protected-mode code will be loaded to this linear address */
 #define LOADED_HIGH_ADDRESS 0x100000
 
+/** xloadflags: kernel is 64-bit */
+#define XLF_KERNEL_64 0x0001
+
+/** xloadflags: 64-bit EFI handover protocol supported */
+#define XLF_EFI_HANDOVER_64 0x0008
+
 /** Protected-mode bit in CR0 */
 #define CR0_PE 0x01
 
@@ -90,7 +96,7 @@ header:
 
 	.org	0x206
 version:
-	.word	0x203	/* Version 2.03 */
+	.word	0x020c	/* Version 2.12 */
 
 	.org	0x20e
 kernel_version:
@@ -115,6 +121,75 @@ cmd_line_ptr:
 	.org	0x22c
 ramdisk_max:
 	.long	0xffffffff
+
+	/* Version 2.05+ */
+	.org	0x230
+kernel_alignment:
+	.long	0x200000	/* 2MB alignment */
+
+	.org	0x234
+relocatable_kernel:
+	.byte	0
+
+	.org	0x235
+min_alignment:
+	.byte	0x15		/* 2^21 = 2MB */
+
+	/* Version 2.12+ */
+	.org	0x236
+xloadflags:
+#if __x86_64__
+	.word	( XLF_KERNEL_64 | XLF_EFI_HANDOVER_64 )
+#else
+	.word	0
+#endif
+
+	/* Version 2.06+ */
+	.org	0x238
+cmdline_size:
+	.long	0x7ff		/* 2047 bytes */
+
+	/* Version 2.07+ */
+	.org	0x23c
+hardware_subarch:
+	.long	0
+
+	.org	0x240
+hardware_subarch_data:
+	.quad	0
+
+	/* Version 2.08+ */
+	.org	0x248
+payload_offset:
+	.long	0
+
+	.org	0x24c
+payload_length:
+	.long	0
+
+	/* Version 2.09+ */
+	.org	0x250
+setup_data:
+	.quad	0
+
+	/* Version 2.10+ */
+	.org	0x258
+pref_address:
+	.quad	LOADED_HIGH_ADDRESS
+
+	.org	0x260
+init_size:
+	.long	0x1000000	/* 16MB */
+
+	/* Version 2.11+ */
+	.org	0x264
+handover_offset:
+#if __x86_64__
+	/* GRUB adds 512 for 64-bit, so subtract it here */
+	.long	( _efi_handover_raw_offset - 512 )
+#else
+	.long	0
+#endif
 
 version_string:
 	.asciz	VERSION
