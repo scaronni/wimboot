@@ -62,6 +62,8 @@ Unlike iPXE, GRUB does not understand the `newc:name:/path` syntax — it will t
 
 ```
 cd /path/to/wimboot/files
+mv boot/* efi/boot/* sources/* .
+rm -fr boot/ efi/ sources/
 printf 'bcd\nboot.sdi\nboot.wim\nbootx64.efi\n' | cpio -o -H newc > initrd.img
 ```
 
