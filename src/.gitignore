@@ -1,4 +1,7 @@
 wimboot
+wimboot.arm64
+wimboot.i386
+wimboot.x86_64
 *.s
 *.o
 *.a
